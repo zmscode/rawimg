@@ -5,7 +5,16 @@ struct CanvasView: View {
 
     var body: some View {
         Group {
-            if let image = document.displayImage {
+            if document.isLoading {
+                VStack(spacing: 16) {
+                    ProgressView()
+                        .controlSize(.large)
+                    Text("Decoding RAW...")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let image = document.displayImage {
                 ScrollView([.horizontal, .vertical]) {
                     Image(nsImage: image)
                         .resizable()

@@ -12,6 +12,9 @@ struct SidebarView: View {
                     LabeledContent("Channels", value: "\(document.imageChannels)")
                     LabeledContent("Depth", value: "\(document.imageDepth * 8)-bit")
                     LabeledContent("Format", value: formatName(document.imageFormat))
+                    if document.loadTime > 0 {
+                        LabeledContent("Load time", value: String(format: "%.2fs", document.loadTime))
+                    }
                 }
 
                 Section("Adjustments") {
