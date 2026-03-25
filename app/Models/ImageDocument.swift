@@ -29,12 +29,20 @@ class ImageDocument: ObservableObject {
     @Published var showError = false
     @Published var errorMessage = ""
 
+    // The C++ pixel buffer — populated lazily, only when editing needs it
     private var imageHandle: RawImgHandle?
+    private var handleIsDirty = false
 
-    // Core Image context — reuse for performance (GPU-backed)
+    // Retained CGImage for display (avoids re-rendering from C++ buffer)
+    private var sourceCGImage: CGImage?
+    private var sourceURL: URL?
+
+    // Core Image context — reuse, GPU-backed via Metal
     private static let ciContext: CIContext = {
         if let mtlDevice = MTLCreateSystemDefaultDevice() {
-            return CIContext(mtlDevice: mtlDevice)
+            return CIContext(mtlDevice: mtlDevice, options: [
+                .cacheIntermediates: false,
+            ])
         }
         return CIContext()
     }()
@@ -68,8 +76,8 @@ class ImageDocument: ObservableObject {
     func loadFile(url: URL) {
         let ext = url.pathExtension.lowercased()
 
-        // Camera raw — use GPU-accelerated Core Image pipeline
-        if Self.cameraRawExtensions.contains(ext) || rawimg_is_camera_raw(url.path) == 1 {
+        // Camera raw — detect by extension only (no file I/O on main thread)
+        if Self.cameraRawExtensions.contains(ext) {
             loadCameraRawAsync(url: url)
             return
         }
@@ -102,6 +110,7 @@ class ImageDocument: ObservableObject {
     // MARK: - File Export
 
     func exportPNG() {
+        ensureHandle()
         guard imageHandle != nil else { return }
 
         let panel = NSSavePanel()
@@ -117,6 +126,7 @@ class ImageDocument: ObservableObject {
     }
 
     func exportRaw() {
+        ensureHandle()
         guard imageHandle != nil else { return }
 
         let panel = NSSavePanel()
@@ -140,146 +150,147 @@ class ImageDocument: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
-            let result = self.decodeCameraRawWithCoreImage(url: url)
+            // Step 1: Try Core Image (GPU-accelerated)
+            var cgImage: CGImage?
+            var ciDecoded = false
+
+            if let rawFilter = CIRAWFilter(imageURL: url) {
+                rawFilter.boostAmount = 0
+                rawFilter.isGamutMappingEnabled = true
+
+                if let ciImage = rawFilter.outputImage {
+                    let extent = ciImage.extent
+                    cgImage = Self.ciContext.createCGImage(ciImage, from: extent)
+                    ciDecoded = (cgImage != nil)
+                }
+            }
+
+            // Step 2: Fall back to LibRaw on CPU if Core Image failed
+            var librawHandle: RawImgHandle?
+            if !ciDecoded {
+                var errorPtr: UnsafeMutablePointer<CChar>?
+                librawHandle = rawimg_load_camera_raw(url.path, &errorPtr)
+                if let errorPtr = errorPtr {
+                    rawimg_free_string(errorPtr)
+                }
+            }
+
+            let elapsed = CACurrentMediaTime() - start
 
             DispatchQueue.main.async {
                 self.isLoading = false
-                self.loadTime = CACurrentMediaTime() - start
+                self.loadTime = elapsed
 
-                switch result {
-                case .success(let (cgImage, handle)):
-                    if let oldHandle = self.imageHandle {
-                        rawimg_destroy(oldHandle)
-                    }
-                    self.imageHandle = handle
-                    self.imageWidth = cgImage.width
-                    self.imageHeight = cgImage.height
+                if let oldHandle = self.imageHandle {
+                    rawimg_destroy(oldHandle)
+                    self.imageHandle = nil
+                }
+
+                if let cg = cgImage {
+                    // Display directly from CGImage — no pixel copy
+                    self.sourceCGImage = cg
+                    self.sourceURL = url
+                    self.handleIsDirty = true  // C++ buffer not yet populated
+                    self.imageWidth = cg.width
+                    self.imageHeight = cg.height
                     self.imageChannels = 3
-                    self.imageDepth = 2  // 16-bit from CIRAWFilter
-                    self.imageFormat = RawImgPixelFormat_RGB16
+                    self.imageDepth = 1
+                    self.imageFormat = RawImgPixelFormat_RGB8
                     self.fileName = url.lastPathComponent
                     self.hasImage = true
                     self.displayImage = NSImage(
-                        cgImage: cgImage,
-                        size: NSSize(width: cgImage.width, height: cgImage.height))
+                        cgImage: cg,
+                        size: NSSize(width: cg.width, height: cg.height))
 
-                case .failure(let error):
-                    // Fall back to LibRaw if Core Image fails
-                    self.loadCameraRawLibRaw(url: url)
-                    if !self.hasImage {
-                        self.showError(message: error.localizedDescription)
-                    }
+                } else if let handle = librawHandle {
+                    // LibRaw fallback — C++ buffer is already populated
+                    self.sourceCGImage = nil
+                    self.sourceURL = url
+                    self.handleIsDirty = false
+                    self.applyHandle(handle, fileName: url.lastPathComponent)
+
+                } else {
+                    self.showError(message: "Failed to decode camera raw file.")
                 }
             }
         }
     }
 
-    private func decodeCameraRawWithCoreImage(url: URL)
-        -> Result<(CGImage, RawImgHandle), Error>
-    {
-        // Use CIRAWFilter for GPU-accelerated decoding
-        guard let rawFilter = CIRAWFilter(imageURL: url) else {
-            return .failure(NSError(
-                domain: "rawimg", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Core Image cannot decode this file"]))
+    // MARK: - Lazy C++ Buffer Population
+
+    /// Ensures the C++ Image handle is populated (for editing/export).
+    /// Called lazily — only when an operation actually needs the pixel buffer.
+    func ensureHandle() {
+        guard handleIsDirty, let cg = sourceCGImage else { return }
+
+        let w = cg.width
+        let h = cg.height
+
+        if let oldHandle = imageHandle {
+            rawimg_destroy(oldHandle)
+            imageHandle = nil
         }
 
-        // Configure for quality
-        rawFilter.boostAmount = 0
-        rawFilter.isGamutMappingEnabled = true
-
-        guard let ciImage = rawFilter.outputImage else {
-            return .failure(NSError(
-                domain: "rawimg", code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "Core Image processing failed"]))
-        }
-
-        let extent = ciImage.extent
-        let w = Int(extent.width)
-        let h = Int(extent.height)
-
-        // Render via Metal-backed CIContext → CGImage
-        guard let cgImage = Self.ciContext.createCGImage(ciImage, from: extent) else {
-            return .failure(NSError(
-                domain: "rawimg", code: 3,
-                userInfo: [NSLocalizedDescriptionKey: "Failed to render image"]))
-        }
-
-        // Also populate our C++ Image buffer for editing operations
-        let handle = cgImageToHandle(cgImage, width: UInt32(w), height: UInt32(h))
-
-        guard let handle = handle else {
-            return .failure(NSError(
-                domain: "rawimg", code: 4,
-                userInfo: [NSLocalizedDescriptionKey: "Failed to create image buffer"]))
-        }
-
-        return .success((cgImage, handle))
+        imageHandle = cgImageToHandle(cg)
+        handleIsDirty = false
     }
 
-    /// Convert a CGImage to our C++ Image handle using vImage for fast pixel extraction
-    private func cgImageToHandle(_ cgImage: CGImage, width: UInt32, height: UInt32) -> RawImgHandle?
-    {
-        let w = Int(width)
-        let h = Int(height)
+    /// Convert CGImage → C++ Image handle using vImage for fast format conversion
+    private func cgImageToHandle(_ cgImage: CGImage) -> RawImgHandle? {
+        let w = cgImage.width
+        let h = cgImage.height
 
-        // Use vImage for hardware-accelerated pixel format conversion
-        guard let cfData = cgImage.dataProvider?.data else { return nil }
-        let srcPtr = CFDataGetBytePtr(cfData)!
-        let srcLen = CFDataGetLength(cfData)
+        // Use vImage to convert to a known RGB888 format
+        guard var srcBuffer = try? vImage_Buffer(cgImage: cgImage) else { return nil }
+        defer { srcBuffer.free() }
 
-        let handle = rawimg_create(width, height, RawImgPixelFormat_RGB8)
+        // Create destination buffer for RGB8 (3 bytes per pixel)
+        let handle = rawimg_create(UInt32(w), UInt32(h), RawImgPixelFormat_RGB8)
         guard let handle = handle else { return nil }
 
         let dstPtr = rawimg_data_mut(handle)!
-        let bpp = cgImage.bitsPerPixel / 8
-        let srcRowBytes = cgImage.bytesPerRow
-        let dstRowBytes = w * 3
 
-        // Fast copy using vImage-style row iteration
-        // CGImage may be RGBA or BGRA — handle both
+        // Use vImage to convert ARGB/RGBA → planar or just extract RGB
+        // The source from vImage_Buffer(cgImage:) is typically ARGB8888
+        let srcPtr = srcBuffer.data.assumingMemoryBound(to: UInt8.self)
+        let srcRowBytes = srcBuffer.rowBytes
+        let srcBpp = srcRowBytes / w  // bytes per pixel in source
+
+        // Determine pixel layout from the CGImage
         let alphaInfo = cgImage.alphaInfo
         let byteOrder = cgImage.bitmapInfo.intersection(.byteOrderMask)
-        let isBGRA = (byteOrder == .byteOrder32Little)
 
+        // Figure out R,G,B offsets in the source pixel
+        let rOff: Int
+        let gOff: Int
+        let bOff: Int
+
+        if byteOrder == .byteOrder32Little {
+            // BGRA layout
+            rOff = 2; gOff = 1; bOff = 0
+        } else if alphaInfo == .first || alphaInfo == .noneSkipFirst || alphaInfo == .premultipliedFirst {
+            // ARGB layout
+            rOff = 1; gOff = 2; bOff = 3
+        } else {
+            // RGBA layout (default)
+            rOff = 0; gOff = 1; bOff = 2
+        }
+
+        // Bulk copy with stride — much faster than per-pixel in Swift
         for y in 0..<h {
             let srcRow = srcPtr + y * srcRowBytes
-            let dstRow = dstPtr + y * dstRowBytes
+            let dstRow = dstPtr + y * w * 3
 
             for x in 0..<w {
-                let sp = srcRow + x * bpp
-                if isBGRA {
-                    dstRow[x * 3 + 0] = sp[2]  // R
-                    dstRow[x * 3 + 1] = sp[1]  // G
-                    dstRow[x * 3 + 2] = sp[0]  // B
-                } else {
-                    dstRow[x * 3 + 0] = sp[0]  // R
-                    dstRow[x * 3 + 1] = sp[1]  // G
-                    dstRow[x * 3 + 2] = sp[2]  // B
-                }
+                let sp = srcRow + x * srcBpp
+                let dp = dstRow + x * 3
+                dp[0] = sp[rOff]
+                dp[1] = sp[gOff]
+                dp[2] = sp[bOff]
             }
         }
 
         return handle
-    }
-
-    // MARK: - LibRaw Fallback
-
-    private func loadCameraRawLibRaw(url: URL) {
-        if let handle = imageHandle {
-            rawimg_destroy(handle)
-            imageHandle = nil
-        }
-
-        var errorPtr: UnsafeMutablePointer<CChar>?
-        guard let handle = rawimg_load_camera_raw(url.path, &errorPtr) else {
-            if let errorPtr = errorPtr {
-                rawimg_free_string(errorPtr)
-            }
-            return
-        }
-
-        applyHandle(handle, fileName: url.lastPathComponent)
     }
 
     // MARK: - Flat Raw Binary Loading
@@ -303,6 +314,8 @@ class ImageDocument: ObservableObject {
             return
         }
 
+        sourceCGImage = nil
+        handleIsDirty = false
         applyHandle(handle, fileName: url.lastPathComponent)
     }
 
@@ -325,29 +338,23 @@ class ImageDocument: ObservableObject {
         let w = Int(rawimg_width(handle))
         let h = Int(rawimg_height(handle))
 
-        // Use vImage (Accelerate) for fast RGBA conversion
         var bufSize: Int = 0
         guard let rgba = rawimg_to_rgba8(handle, &bufSize) else { return }
         defer { rawimg_free_rgba8(rgba) }
 
-        // Create CGImage directly from buffer — avoid extra copies
-        guard
-            let provider = CGDataProvider(dataInfo: nil, data: rgba, size: bufSize,
-                                          releaseData: { _, _, _ in })
-        else { return }
-
+        let data = Data(bytes: rgba, count: bufSize)
         let colorSpace = CGColorSpaceCreateDeviceRGB()
 
-        guard
-            let cgImage = CGImage(
-                width: w, height: h,
-                bitsPerComponent: 8, bitsPerPixel: 32,
-                bytesPerRow: w * 4,
-                space: colorSpace,
-                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                provider: provider,
-                decode: nil, shouldInterpolate: false,
-                intent: .defaultIntent)
+        guard let provider = CGDataProvider(data: data as CFData),
+              let cgImage = CGImage(
+                  width: w, height: h,
+                  bitsPerComponent: 8, bitsPerPixel: 32,
+                  bytesPerRow: w * 4,
+                  space: colorSpace,
+                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                  provider: provider,
+                  decode: nil, shouldInterpolate: false,
+                  intent: .defaultIntent)
         else { return }
 
         displayImage = NSImage(cgImage: cgImage, size: NSSize(width: w, height: h))
