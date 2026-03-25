@@ -1,0 +1,41 @@
+name: RawImg
+options:
+  bundleIdPrefix: com.rawimg
+  deploymentTarget:
+    macOS: "14.0"
+
+targets:
+  RawImgCore:
+    type: library.static
+    platform: macOS
+    sources:
+      - path: core/src
+        type: group
+    settings:
+      CLANG_CXX_LANGUAGE_STANDARD: c++20
+      HEADER_SEARCH_PATHS:
+        - $(SRCROOT)/core/include
+      OTHER_CPLUSPLUSFLAGS:
+        - "-std=c++20"
+
+  RawImg:
+    type: application
+    platform: macOS
+    sources:
+      - path: app
+        type: group
+        excludes:
+          - "**/*.h"
+    dependencies:
+      - target: RawImgCore
+    info:
+      path: app/Info.plist
+    settings:
+      SWIFT_OBJC_BRIDGING_HEADER: app/RawImg-Bridging-Header.h
+      HEADER_SEARCH_PATHS:
+        - $(SRCROOT)/core/include
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      GENERATE_INFOPLIST_FILE: NO
+      OTHER_LDFLAGS:
+        - "-lc++"

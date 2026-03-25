@@ -1,6 +1,12 @@
 # Build
 build/
 cmake-build-*/
+DerivedData/
+
+# Xcode
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
 
 # IDE
 .vscode/
