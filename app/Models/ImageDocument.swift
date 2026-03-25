@@ -42,13 +42,18 @@ class ImageDocument: ObservableObject {
 
     func openFile() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.data, .rawImage, .image]
         panel.allowsMultipleSelection = false
         panel.message = "Select an image file"
         panel.treatsFilePackagesAsDirectories = false
+        panel.allowsOtherFileTypes = true
+        panel.allowedContentTypes = []  // Accept all files
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
+        loadFile(url: url)
+    }
+
+    func loadFile(url: URL) {
         let ext = url.pathExtension.lowercased()
 
         // Try camera raw first (by extension or by probing with LibRaw)
