@@ -10,6 +10,8 @@ struct SidebarView: View {
                     LabeledContent("Width", value: "\(document.imageWidth)px")
                     LabeledContent("Height", value: "\(document.imageHeight)px")
                     LabeledContent("Channels", value: "\(document.imageChannels)")
+                    LabeledContent("Depth", value: "\(document.imageDepth * 8)-bit")
+                    LabeledContent("Format", value: formatName(document.imageFormat))
                 }
 
                 Section("Adjustments") {
@@ -34,5 +36,17 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+    }
+
+    private func formatName(_ format: RawImgPixelFormat) -> String {
+        switch format {
+        case RawImgPixelFormat_Grayscale8:  return "Grayscale 8-bit"
+        case RawImgPixelFormat_Grayscale16: return "Grayscale 16-bit"
+        case RawImgPixelFormat_RGB8:        return "RGB 8-bit"
+        case RawImgPixelFormat_RGB16:       return "RGB 16-bit"
+        case RawImgPixelFormat_RGBA8:       return "RGBA 8-bit"
+        case RawImgPixelFormat_RGBA16:      return "RGBA 16-bit"
+        default:                            return "Unknown"
+        }
     }
 }

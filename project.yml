@@ -15,6 +15,7 @@ targets:
       CLANG_CXX_LANGUAGE_STANDARD: c++20
       HEADER_SEARCH_PATHS:
         - $(SRCROOT)/core/include
+        - $(SRCROOT)/core/vendor
       OTHER_CPLUSPLUSFLAGS:
         - "-std=c++20"
 

@@ -19,8 +19,13 @@ struct ContentView: View {
                 }
 
                 if document.hasImage {
-                    Button {
-                        document.exportFile()
+                    Menu {
+                        Button("Export as PNG...") {
+                            document.exportPNG()
+                        }
+                        Button("Export as Raw...") {
+                            document.exportRaw()
+                        }
                     } label: {
                         Label("Export", systemImage: "square.and.arrow.up")
                     }
@@ -29,6 +34,31 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .openFile)) { _ in
             document.openFile()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .exportPNG)) { _ in
+            document.exportPNG()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .exportRaw)) { _ in
+            document.exportRaw()
+        }
+        .sheet(isPresented: $document.showImportDialog) {
+            if let url = document.pendingImportURL {
+                ImportDialog(
+                    fileURL: url,
+                    fileSize: document.pendingFileSize,
+                    onImport: { width, height, format in
+                        document.performImport(width: width, height: height, format: format)
+                    },
+                    onCancel: {
+                        document.cancelImport()
+                    }
+                )
+            }
+        }
+        .alert("Error", isPresented: $document.showError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(document.errorMessage)
         }
     }
 }

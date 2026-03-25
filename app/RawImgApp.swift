@@ -15,10 +15,23 @@ struct RawImgApp: App {
                 }
                 .keyboardShortcut("o", modifiers: .command)
             }
+            CommandGroup(after: .saveItem) {
+                Button("Export as PNG...") {
+                    NotificationCenter.default.post(name: .exportPNG, object: nil)
+                }
+                .keyboardShortcut("e", modifiers: .command)
+
+                Button("Export as Raw...") {
+                    NotificationCenter.default.post(name: .exportRaw, object: nil)
+                }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+            }
         }
     }
 }
 
 extension Notification.Name {
     static let openFile = Notification.Name("openFile")
+    static let exportPNG = Notification.Name("exportPNG")
+    static let exportRaw = Notification.Name("exportRaw")
 }
