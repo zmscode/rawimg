@@ -35,6 +35,13 @@ void rawimg_destroy(RawImgHandle handle);
 RawImgHandle rawimg_load_raw(const char* path, uint32_t width, uint32_t height,
                              RawImgPixelFormat format, char** error_out);
 
+/// Load a camera raw file (CR3, CR2, NEF, ARW, DNG, etc.) via LibRaw.
+/// Auto-detects dimensions and format. Returns NULL on failure.
+RawImgHandle rawimg_load_camera_raw(const char* path, char** error_out);
+
+/// Check if a file is a supported camera raw format. Returns 1 if yes, 0 if no.
+int rawimg_is_camera_raw(const char* path);
+
 /// Save image as raw binary. Returns 1 on success, 0 on failure.
 int rawimg_save_raw(RawImgHandle handle, const char* path);
 

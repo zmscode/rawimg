@@ -137,6 +137,9 @@ public:
         return file.good();
     }
 
+    // Load camera raw files (CR3, CR2, NEF, ARW, etc.) via LibRaw
+    static Image loadCameraRaw(const std::string& path);
+
     // PNG export — converts 16-bit to 8-bit for PNG output
     bool savePng(const std::string& path) const;
 

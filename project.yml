@@ -16,6 +16,8 @@ targets:
       HEADER_SEARCH_PATHS:
         - $(SRCROOT)/core/include
         - $(SRCROOT)/core/vendor
+        - /opt/homebrew/include
+        - /opt/homebrew/include/libraw
       OTHER_CPLUSPLUSFLAGS:
         - "-std=c++20"
 
@@ -38,5 +40,9 @@ targets:
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "14.0"
       GENERATE_INFOPLIST_FILE: NO
+      LIBRARY_SEARCH_PATHS:
+        - /opt/homebrew/lib
       OTHER_LDFLAGS:
         - "-lc++"
+        - "-lraw"
+        - "-llcms2"
